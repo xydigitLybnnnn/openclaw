@@ -2,6 +2,7 @@ import { normalizeOptionalString as normalizeLifecycleRunId } from "@openclaw/no
 import type { SessionRunStatus } from "../../packages/gateway-protocol/src/schema/sessions-row.js";
 import { isAgentLifecycleYieldedWaiting } from "../agents/agent-lifecycle-parent-state.js";
 import {
+  AGENT_RUN_TERMINAL_RETRY_GRACE_MS,
   buildAgentRunTerminalOutcomeFromLifecycleEvent,
   classifyAgentRunTerminalOutcome,
   type AgentRunTerminalOutcome,
@@ -23,6 +24,7 @@ import { loadSessionEntry } from "./session-utils.js";
 import type { GatewaySessionRow } from "./session-utils.types.js";
 
 const restartRecoveryLog = createSubsystemLogger("main-session-restart-recovery");
+const staleRunningReconcileLog = createSubsystemLogger("session-lifecycle-reconcile");
 
 type LifecyclePhase = "start" | "end" | "error";
 
@@ -457,4 +459,128 @@ export async function persistGatewaySessionLifecycleEvent(params: {
       assertCommitAllowed: params.assertCommitAllowed,
     });
   }
+}
+
+/**
+ * Terminal reason recorded when a durable `running` row is found without a live
+ * run owner. Short because it surfaces in session rows and UI error copy.
+ */
+const STALE_RUNNING_RECONCILE_ERROR =
+  "Run ended without a terminal lifecycle event; session state was reconciled.";
+
+/**
+ * True when a durable `running` row is old enough that a missing live-run
+ * registry entry means the run is dead rather than still starting up. Read
+ * projections use this to avoid showing a just-started run as terminal.
+ */
+export function isStaleRunningSessionAge(
+  updatedAt: number | null | undefined,
+  now = Date.now(),
+): boolean {
+  return (
+    typeof updatedAt === "number" &&
+    Number.isFinite(updatedAt) &&
+    now - updatedAt >= AGENT_RUN_TERMINAL_RETRY_GRACE_MS
+  );
+}
+
+function buildStaleRunningTerminalPatch(params: {
+  entry: SessionEntry;
+  now: number;
+}): Partial<PersistedLifecycleSessionShape> | null {
+  const runId =
+    normalizeLifecycleRunId(params.entry.lifecycleRunId) ??
+    normalizeLifecycleRunId(params.entry.lastRunId);
+  const patch = derivePersistedSessionLifecyclePatch({
+    entry: params.entry,
+    event: {
+      ts: params.now,
+      ...(params.entry.sessionId ? { sessionId: params.entry.sessionId } : {}),
+      ...(runId ? { runId } : {}),
+      data: {
+        phase: "error",
+        error: STALE_RUNNING_RECONCILE_ERROR,
+        endedAt: params.now,
+      },
+    },
+  });
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+/**
+ * Settles a session left in the durable `running` state after its run owner
+ * disappeared without a persisted terminal lifecycle event (for example an
+ * idle-timeout whose prepared terminal write expired). This reuses the same
+ * lifecycle owner and terminal derivation as real lifecycle events, so the row
+ * converges to one terminal state instead of a parallel state machine.
+ *
+ * `hasLiveRun` must synchronously re-read every live-run registry. It is called
+ * again under the writer barrier, so a run that started after the initial read
+ * is never settled. The age gate avoids racing a just-started run whose
+ * controller/registry entry has not been published yet.
+ */
+export async function reconcileStaleRunningSession(params: {
+  sessionKey: string;
+  agentId?: string;
+  hasLiveRun: () => boolean;
+  now?: number;
+  assertCommitAllowed?: () => void;
+}): Promise<boolean> {
+  const sessionEntry = loadSessionEntry(params.sessionKey, {
+    ...(params.agentId ? { agentId: params.agentId } : {}),
+    clone: false,
+  });
+  const entry = sessionEntry.entry;
+  if (!entry || entry.status !== "running") {
+    return false;
+  }
+  const now = params.now ?? Date.now();
+  const startedAt = entry.startedAt ?? entry.updatedAt;
+  if (
+    typeof startedAt === "number" &&
+    Number.isFinite(startedAt) &&
+    now - startedAt < AGENT_RUN_TERMINAL_RETRY_GRACE_MS
+  ) {
+    return false;
+  }
+  if (params.hasLiveRun()) {
+    return false;
+  }
+  let settled = false;
+  const persisted = await patchSessionEntryCore(
+    {
+      storePath: sessionEntry.storePath,
+      sessionKey: sessionEntry.canonicalKey,
+    },
+    (storedEntry) => {
+      const current = storedEntry as SessionEntry;
+      if (current.status !== "running" || params.hasLiveRun()) {
+        return null;
+      }
+      const patch = buildStaleRunningTerminalPatch({ entry: current, now });
+      if (!patch) {
+        return null;
+      }
+      settled = true;
+      return patch;
+    },
+    {
+      skipMaintenance: true,
+      takeCacheOwnership: true,
+      requireWriteSuccess: true,
+      ...(params.assertCommitAllowed ? { assertCommitAllowed: params.assertCommitAllowed } : {}),
+    },
+  );
+  // patchSessionEntryCore returns the unchanged entry when the callback declines,
+  // so the explicit flag is the only proof this owner actually wrote a terminal.
+  if (!settled || !persisted) {
+    return false;
+  }
+  lifecyclePersistenceVersion += 1;
+  staleRunningReconcileLog.warn(
+    `settled stale running session=${sessionEntry.canonicalKey} ageMs=${
+      Number.isFinite(startedAt) ? now - startedAt : "unknown"
+    }`,
+  );
+  return true;
 }

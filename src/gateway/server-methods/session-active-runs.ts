@@ -318,3 +318,27 @@ export function createVisibleActiveSessionRunProjector(
       ],
     });
 }
+
+/**
+ * Synchronous liveness probe for stale-running reconciliation. Unlike the list
+ * projector it includes terminal persistence, so a session whose terminal write
+ * is still in flight is treated as live and left to that write.
+ */
+export function createVisibleActiveSessionRunLivenessProbe(
+  context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>,
+): (params: {
+  requestedKey: string;
+  canonicalKey: string;
+  sessionId?: string;
+  agentId?: string;
+  defaultAgentId?: string;
+}) => boolean {
+  const projectedAgentRunIndex = buildProjectedAgentRunIndex();
+  return (params) =>
+    resolveVisibleActiveSessionRunState({
+      ...params,
+      context,
+      projectedAgentRunIndex,
+      includeTerminalPersistence: true,
+    }).active;
+}

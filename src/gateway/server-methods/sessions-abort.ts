@@ -24,6 +24,7 @@ import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-ke
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { resolveSessionKeyForRun } from "../server-session-key.js";
+import { reconcileStaleRunningSession } from "../session-lifecycle-state.js";
 import {
   resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId,
   tryResolveSessionCompatibilityOwnerAgentId,
@@ -44,6 +45,7 @@ import {
   abortQueuedCollectorSession,
   descendantAbortError,
 } from "./chat-abort-runtime.js";
+import { createVisibleActiveSessionRunLivenessProbe } from "./session-active-runs.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { requireSessionKey } from "./sessions-shared.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
@@ -324,6 +326,31 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const abortSessionKey =
       canonicalKey === "global" && requestedGlobalAgentId ? "global" : resolvedAbortSessionKey;
     const abortAgentId = requestedGlobalAgentId ?? activeRunAgentId;
+    // Stop must repair a session whose run already died without persisting a
+    // terminal lifecycle event. Reconcile through the lifecycle owner so the
+    // subsequent UI refresh observes a terminal row instead of stale `running`.
+    const probeLiveRun = createVisibleActiveSessionRunLivenessProbe(context);
+    const reconcileStaleRunning = async (): Promise<void> => {
+      await reconcileStaleRunningSession({
+        sessionKey: canonicalKey,
+        agentId: targetAgentId,
+        hasLiveRun: () =>
+          probeLiveRun({
+            requestedKey: key,
+            canonicalKey,
+            ...(sessionEntry?.sessionId ? { sessionId: sessionEntry.sessionId } : {}),
+            agentId: targetAgentId,
+            ...(stableTargetOwner ? { defaultAgentId: stableTargetOwner } : {}),
+          }),
+        ...(sessionMutationAuthorization?.assertCurrent
+          ? { assertCommitAllowed: sessionMutationAuthorization.assertCurrent }
+          : {}),
+      }).catch((error: unknown) => {
+        context.logGateway.warn(
+          `Failed to reconcile stale running session ${canonicalKey}: ${String(error)}`,
+        );
+      });
+    };
     // Controller-backed runs must keep the requester checks and lifecycle cleanup below.
     if (embeddedRun && !activeRun) {
       let aborted = false;
@@ -340,6 +367,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       if (error) {
         respond(false, undefined, error);
       } else {
+        if (!aborted) {
+          await reconcileStaleRunning();
+        }
         respond(true, {
           ok: true,
           abortedRunId: aborted ? embeddedRun.runId : null,
@@ -428,6 +458,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       if (!result.ok) {
         respond(false, undefined, result.error);
       } else {
+        if (!result.value.aborted) {
+          await reconcileStaleRunning();
+        }
         respond(
           true,
           {
@@ -505,6 +538,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     await mcpRetirement;
     if (!chatAbortSucceeded) {
       return;
+    }
+    if (!aborted) {
+      await reconcileStaleRunning();
     }
     respond(
       true,

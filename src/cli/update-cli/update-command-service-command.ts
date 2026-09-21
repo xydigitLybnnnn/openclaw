@@ -194,6 +194,7 @@ export async function runUpdatedInstallGatewayCommand(
         : params.invocationEnv,
       serviceEnv: installing ? undefined : params.serviceEnv,
       invocationCwd: params.invocationCwd,
+      nodeRunner,
     }),
   );
   if (executor) {

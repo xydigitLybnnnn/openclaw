@@ -6,6 +6,7 @@ import {
 import { mergePathPrepend } from "../../infra/path-prepend.js";
 import { mergeProcessEnv, resolveEnvironmentValue } from "../../infra/process-env.js";
 import { quoteCliArg, quotePowerShellArg } from "../quote-cli-arg.js";
+import { resolveNodeRunner } from "./node-runner.js";
 
 const SERVICE_REFRESH_PATH_ENV_KEYS = [
   "OPENCLAW_HOME",
@@ -175,10 +176,25 @@ export function disableUpdatedPackageCompileCacheEnv(env: NodeJS.ProcessEnv): No
   };
 }
 
+/**
+ * The managed service unit describes how the Gateway starts, not which Node the
+ * updater installs with. Its `Environment=PATH=...` may name an older Node than
+ * the one selected for the update, so the selected runtime must stay first on
+ * PATH after the service env overlay. Non-absolute runners ("node") resolve via
+ * PATH already and must not prepend the current directory.
+ */
+function prependNodeRunnerDir(env: NodeJS.ProcessEnv, nodeRunner?: string): void {
+  if (!nodeRunner || !path.isAbsolute(nodeRunner)) {
+    return;
+  }
+  env.PATH = mergePathPrepend(env.PATH, [path.dirname(nodeRunner)]);
+}
+
 export function resolveUpdatedInstallCommandEnv(params?: {
   processEnv?: NodeJS.ProcessEnv;
   serviceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
+  nodeRunner?: string;
 }): NodeJS.ProcessEnv {
   const processEnv = resolveServiceRefreshEnv(
     params?.processEnv ?? process.env,
@@ -189,10 +205,14 @@ export function resolveUpdatedInstallCommandEnv(params?: {
     : undefined;
   // SecretRefs may resolve from the updater's runtime env even when the
   // managed service intentionally omits resolved secrets from its definition.
-  return disableUpdatedPackageCompileCacheEnv({
+  const resolved = disableUpdatedPackageCompileCacheEnv({
     ...processEnv,
     ...serviceEnv,
   });
+  // Keep the selected runtime ahead of the service PATH so install/validate/doctor
+  // children cannot silently run on an incompatible Node.
+  prependNodeRunnerDir(resolved, params?.nodeRunner ?? resolveNodeRunner());
+  return resolved;
 }
 
 export function resolveOwnedManagedUpdateEnv(params: {
@@ -200,6 +220,7 @@ export function resolveOwnedManagedUpdateEnv(params: {
   serviceEnv: NodeJS.ProcessEnv;
   serviceDefinitionEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
+  nodeRunner?: string;
 }): NodeJS.ProcessEnv {
   const resolved = resolveUpdatedInstallCommandEnv(params);
   const definitionEnv = params.serviceDefinitionEnv ?? params.serviceEnv;
@@ -219,9 +240,7 @@ export function resolveUpdateTargetEnv(params?: {
   const resolvedEnv = disableUpdatedPackageCompileCacheEnv(
     resolveServiceRefreshEnv(params?.baseEnv ?? process.env, params?.invocationCwd),
   );
-  if (params?.nodeRunner) {
-    resolvedEnv.PATH = mergePathPrepend(resolvedEnv.PATH, [path.dirname(params.nodeRunner)]);
-  }
+  prependNodeRunnerDir(resolvedEnv, params?.nodeRunner);
   if (!params?.serviceEnv) {
     return resolvedEnv;
   }

@@ -140,6 +140,7 @@ export async function continueMigratedUpdateInFreshProcess(
       ...stripGatewayServiceMarkerEnv(
         resolveUpdatedInstallCommandEnv({
           processEnv: params.ownedManagedUpdateEnv ?? run.env,
+          nodeRunner: params.packageUpdateNodeRunner,
         }),
       ),
       OPENCLAW_UPDATE_IN_PROGRESS: "1",

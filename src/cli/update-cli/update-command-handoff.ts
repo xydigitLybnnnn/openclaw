@@ -158,6 +158,7 @@ export async function handoffUpdateFromGateway(params: {
     serviceEnv: params.state.env,
     serviceDefinitionEnv: resolveManagedGatewayServiceCommand(params.state.command)?.environment,
     invocationCwd: params.invocationCwd,
+    nodeRunner: params.nodeRunner,
   });
   const argv1 = await resolveGatewayInstallEntrypoint(params.root);
   if (!argv1) {

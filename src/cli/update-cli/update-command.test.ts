@@ -298,6 +298,7 @@ describe("resolveUpdatedInstallCommandEnv", () => {
   it("keeps runtime SecretRef inputs while applying managed service overrides", () => {
     const env = resolveUpdatedInstallCommandEnv({
       invocationCwd: "/srv/openclaw",
+      nodeRunner: "/opt/node24/bin/node",
       processEnv: {
         OPENCLAW_GATEWAY_AUTH_TOKEN: "runtime-token",
         OPENCLAW_STATE_DIR: "/wrong/state",
@@ -311,9 +312,48 @@ describe("resolveUpdatedInstallCommandEnv", () => {
 
     expect(env.OPENCLAW_GATEWAY_AUTH_TOKEN).toBe("runtime-token");
     expect(env.OPENCLAW_STATE_DIR).toBe(path.join("/srv/openclaw", "daemon-state"));
-    expect(env.PATH).toBe("/daemon/bin");
+    expect(env.PATH).toBe(`/opt/node24/bin${path.delimiter}/daemon/bin`);
     expect(env.NODE_DISABLE_COMPILE_CACHE).toBe("1");
-    expect(resolveUpdatedInstallCommandEnv({ processEnv: env })).toEqual(env);
+    expect(
+      resolveUpdatedInstallCommandEnv({ processEnv: env, nodeRunner: "/opt/node24/bin/node" }),
+    ).toEqual(env);
+  });
+
+  it("keeps the selected runtime ahead of an older service unit PATH node", () => {
+    const env = resolveUpdatedInstallCommandEnv({
+      nodeRunner: "/usr/bin/node",
+      processEnv: { PATH: "/usr/bin:/usr/local/bin:/bin" },
+      serviceEnv: {
+        PATH: "/opt/node22/bin:/usr/local/bin:/bin:/home/operator/.local/bin",
+      },
+    });
+
+    // The service unit's own Node must not win over the runtime selected for the update.
+    expect(env.PATH).toBe(
+      ["/usr/bin", "/opt/node22/bin", "/usr/local/bin", "/bin", "/home/operator/.local/bin"].join(
+        path.delimiter,
+      ),
+    );
+  });
+
+  it("does not prepend a relative directory when the runner resolves via PATH", () => {
+    const env = resolveUpdatedInstallCommandEnv({
+      nodeRunner: "node",
+      processEnv: { PATH: "/usr/bin:/bin" },
+      serviceEnv: { PATH: "/opt/node22/bin:/bin" },
+    });
+
+    expect(env.PATH).toBe(`/opt/node22/bin${path.delimiter}/bin`);
+  });
+
+  it("defaults to the updater runtime so service PATH cannot select an older node", () => {
+    const env = resolveUpdatedInstallCommandEnv({
+      processEnv: { PATH: "/caller/bin" },
+      serviceEnv: { PATH: "/daemon/bin" },
+    });
+
+    expect(env.PATH?.split(path.delimiter)[0]).toBe(path.dirname(process.execPath));
+    expect(env.PATH?.split(path.delimiter)).toContain("/daemon/bin");
   });
 
   it("preserves effective base-owned selectors while clearing unowned caller selectors", () => {

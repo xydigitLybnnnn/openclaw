@@ -406,6 +406,7 @@ export async function executeMutableUpdate(
           env: resolveUpdatedInstallCommandEnv({
             processEnv: env,
             invocationCwd: params.invocationCwd,
+            nodeRunner: params.packageUpdateNodeRunner,
           }),
           executor,
           timeoutMs: updateStepTimeoutMs,

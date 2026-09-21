@@ -111,6 +111,7 @@ export async function initializeAndRunUpdate(
                 baseEnv: target.packageInstallEnv,
                 serviceEnv: env,
                 invocationCwd,
+                nodeRunner: target.packageUpdateNodeRunner,
               }),
               installTarget: target.packageInstallTarget,
               requirePackageReplacement: target.managedServiceRoot !== undefined,

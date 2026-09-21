@@ -7,7 +7,11 @@ const PATH_VALUE_RE = /^~(?=$|[\\/])/;
 const PATH_KEY_RE = /(dir|path|paths|file|root|workspace)$/i;
 const PATH_LIST_KEYS = new Set(["paths", "pathPrepend"]);
 
-/** Normalize tilde paths in path-like config fields using the config reader's home. */
+/**
+ * Normalize tilde paths in path-like config fields using the config reader's home.
+ * Returns a copy with structural sharing; the input config is never mutated, so
+ * callers can materialize runtime config without leaking into a shared sourceConfig.
+ */
 export function normalizeConfigPaths(
   cfg: OpenClawConfig,
   opts?: { env?: NodeJS.ProcessEnv; homedir?: () => string },
@@ -25,20 +29,35 @@ export function normalizeConfigPaths(
     if (Array.isArray(value)) {
       const normalizeChildren = Boolean(key && PATH_LIST_KEYS.has(key));
       // Only direct string children of path lists inherit the field's path semantics.
-      return value.map((entry) =>
-        normalizeAny(typeof entry === "string" && normalizeChildren ? key : undefined, entry),
-      );
+      let changed = false;
+      const next = value.map((entry) => {
+        const normalized = normalizeAny(
+          typeof entry === "string" && normalizeChildren ? key : undefined,
+          entry,
+        );
+        changed ||= normalized !== entry;
+        return normalized;
+      });
+      return changed ? next : value;
     }
     if (isPlainObject(value)) {
+      // Clone only along changed branches so callers keep structural sharing and
+      // the input config (including shared plugin passthrough subtrees) is never
+      // mutated.
+      let next: Record<string, unknown> | undefined;
       for (const [childKey, childValue] of Object.entries(value)) {
-        const next = normalizeAny(childKey, childValue);
-        if (next !== childValue) {
-          value[childKey] = next;
+        const normalized = normalizeAny(childKey, childValue);
+        if (normalized !== childValue) {
+          next ??= { ...value };
+          next[childKey] = normalized;
         }
       }
+      return next ?? value;
     }
     return value;
   }
-  normalizeAny(undefined, cfg);
-  return cfg;
+  // normalizeAny preserves every object/array key, so the returned value keeps the
+  // input's OpenClawConfig shape.
+  // SAFETY: normalization only rewrites path-like string leaves, never object shape.
+  return normalizeAny(undefined, cfg) as OpenClawConfig;
 }

@@ -75,4 +75,40 @@ describe("normalizeConfigPaths", () => {
       expect(cfg.agents?.list?.[0]?.identity?.name).toBe("~not-a-path");
     });
   });
+
+  it("returns a normalized copy without mutating the input config", async () => {
+    await withTempHome(async (home) => {
+      // Plugin passthrough config keeps its original object reference in validated
+      // configs, so an in-place normalize would leak expanded paths into sourceConfig.
+      const sharedVault = { path: "~/.openclaw/wiki", scope: "global" };
+      const input = {
+        logging: { file: "~/.openclaw/logs/openclaw.log" },
+        plugins: { entries: { "memory-wiki": { config: { vault: sharedVault } } } },
+      };
+
+      const normalized = normalizeConfigPaths(input);
+
+      expect(normalized).not.toBe(input);
+      expect(normalized.logging?.file).toBe(path.join(home, ".openclaw", "logs", "openclaw.log"));
+      expect(
+        (normalized.plugins?.entries?.["memory-wiki"]?.config as { vault?: { path?: string } })
+          ?.vault?.path,
+      ).toBe(path.join(home, ".openclaw", "wiki"));
+      // Original input and the shared nested object must stay untouched.
+      expect(input.logging.file).toBe("~/.openclaw/logs/openclaw.log");
+      expect(sharedVault.path).toBe("~/.openclaw/wiki");
+    });
+  });
+
+  it("preserves structural sharing for branches without tilde paths", async () => {
+    await withTempHome(async () => {
+      const untouched = { enabled: true, nested: { value: 1 } };
+      const input = { plugins: { entries: { demo: { config: untouched } } } };
+
+      const normalized = normalizeConfigPaths(input);
+
+      expect(normalized).toBe(input);
+      expect(normalized.plugins?.entries?.demo?.config).toBe(untouched);
+    });
+  });
 });

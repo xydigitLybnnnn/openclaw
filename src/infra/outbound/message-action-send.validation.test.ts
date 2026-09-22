@@ -157,6 +157,34 @@ describe("runMessageAction send validation", () => {
     expect(result.kind === "send" ? result.payload : undefined).not.toMatchObject({
       location: expect.anything(),
     });
+    // A dry run must never report a delivery or forbid the later real send.
+    const notice = result.kind === "send" ? result.normalization?.notice : undefined;
+    expect(notice).not.toContain("Content sent");
+    expect(notice).not.toContain("Do not retry this send");
+    expect(notice).toContain("dry run");
+    expect(notice).toContain("Nothing was sent");
+  });
+
+  it("keeps the sent-location notice for a real model-authored send", async () => {
+    const result = await runMessageAction({
+      cfg: workspaceConfig,
+      action: "send",
+      actionOrigin: "message-tool",
+      params: {
+        channel: "workspace",
+        target: "channel:C99999999",
+        message: "hello",
+        location: portableLocation,
+      },
+      toolContext: {
+        currentChannelId: "C12345678",
+        currentChannelProvider: "workspace",
+      },
+    });
+
+    const notice = result.kind === "send" ? result.normalization?.notice : undefined;
+    expect(notice).toContain("Content sent");
+    expect(notice).toContain("Do not retry this send");
   });
   it("strips unsupported citation control markers from normal channel sends", async () => {
     const sentText: string[] = [];

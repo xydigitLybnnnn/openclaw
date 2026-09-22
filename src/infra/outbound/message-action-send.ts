@@ -230,12 +230,16 @@ export async function buildMessagePayload(params: {
       hasPresentation ||
       hasInteractive),
   );
+  // The notice describes delivery, so it must track the same authoritative dry-run
+  // state the runner uses; otherwise a dry run leaks a "Content sent" receipt.
+  const dryRun = Boolean(input.dryRun ?? readBooleanParam(actionParams, "dryRun"));
   const normalization =
     hasLocationConflict && input.actionOrigin === "message-tool"
       ? {
           locationOmitted: true as const,
-          notice:
-            "Content sent; location omitted because locations must be sent separately. Do not retry this send. Send a standalone location only if the user explicitly requested it.",
+          notice: dryRun
+            ? "Content prepared for a dry run; location omitted because locations must be sent separately. Nothing was sent. Send a standalone location only if the user explicitly requested it."
+            : "Content sent; location omitted because locations must be sent separately. Do not retry this send. Send a standalone location only if the user explicitly requested it.",
         }
       : undefined;
   if (hasLocationConflict && !normalization) {

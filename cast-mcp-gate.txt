@@ -1,0 +1,8 @@
+Script started on 2026-10-16 15:33:18+08:00
+=== CASE E2 hook-deny (MCP gate) ===
+DONE hook-deny -> /media/vdb/AutoDigit/workspace/logs/real_behavior/issue-173073-evidence/runs/hook-deny
+
+=== CASE E3 hook-timeout (codex fail-open) ===
+DONE hook-timeout -> /media/vdb/AutoDigit/workspace/logs/real_behavior/issue-173073-evidence/runs/hook-timeout
+
+Script done on 2026-10-16 15:33:25+08:00
